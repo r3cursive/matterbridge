@@ -40,6 +40,22 @@ func TestValidMsgID(t *testing.T) {
 	}
 }
 
+func TestReplyParent(t *testing.T) {
+	for _, tc := range []struct {
+		tags   girc.Tags
+		parent string
+	}{
+		{nil, ""},
+		{girc.Tags{tagReply: "msgid1"}, "msgid1"},
+		{girc.Tags{tagReplyFinal: "msgid1"}, "msgid1"},
+		{girc.Tags{tagReply: "msgid1", tagReplyFinal: "msgid1"}, "msgid1"}, // IRCCloud sends both
+		{girc.Tags{tagReply: "bad;id", tagReplyFinal: "msgid1"}, "msgid1"},
+		{girc.Tags{tagReply: ""}, ""},
+	} {
+		assert.Equal(t, tc.parent, replyParent(girc.Event{Tags: tc.tags}), "%v", tc.tags)
+	}
+}
+
 func TestCapsFollowNegotiation(t *testing.T) {
 	var none *ircCaps
 	assert.False(t, none.canTrackEchoes())
@@ -199,6 +215,8 @@ func TestThreadingWithFullSupport(t *testing.T) {
 		parentMsgID := server.sendFromUser("skud", testChannel, "first", nil)
 		tb.receive(t)
 		server.sendFromUser("RustyCloud", testChannel, "reply to first", map[string]string{tagReply: parentMsgID})
+		assert.Equal(t, parentMsgID, tb.receive(t).ParentID)
+		server.sendFromUser("RustyCloud", testChannel, "reply with the final tag name", map[string]string{tagReplyFinal: parentMsgID})
 		assert.Equal(t, parentMsgID, tb.receive(t).ParentID)
 
 		// parent is a message we sent: the gateway knows it by the ID Send() returned

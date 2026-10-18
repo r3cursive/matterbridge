@@ -35,6 +35,7 @@ const (
 	tagLabel           = "label"
 	tagMsgID           = "msgid"
 	tagReply           = "+draft/reply"
+	tagReplyFinal      = "+reply" // name the tag will have once ratified, some clients send both
 	localIDPrefix      = "mbirc-"
 
 	threadCacheSize   = 5000
@@ -383,7 +384,17 @@ func (b *Birc) threadIncoming(rmsg *config.Message, event girc.Event) {
 		rmsg.ID = msgID
 		b.threads.seen(msgID, rmsg.Channel)
 	}
-	if parent, ok := event.Tags.Get(tagReply); ok && validMsgID(parent) {
+	if parent := replyParent(event); parent != "" {
 		rmsg.ParentID = b.threads.gatewayID(parent)
 	}
+}
+
+// replyParent returns the msgid an incoming message replies to, if any.
+func replyParent(event girc.Event) string {
+	for _, tag := range []string{tagReply, tagReplyFinal} {
+		if parent, ok := event.Tags.Get(tag); ok && validMsgID(parent) {
+			return parent
+		}
+	}
+	return ""
 }
