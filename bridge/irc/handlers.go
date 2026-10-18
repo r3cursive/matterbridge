@@ -514,7 +514,9 @@ func (b *Birc) handleNickServ() {
 	}
 	// give nickserv some slack
 	// TODO: Do this a different way, without sleeping
-	time.Sleep(time.Second * 5)
+	if b.GetString("NickServNick") != "" {
+		time.Sleep(time.Second * 5)
+	}
 	b.authDone.Store(true)
 }
 
