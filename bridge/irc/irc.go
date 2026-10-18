@@ -47,6 +47,7 @@ type Birc struct {
 	RelayMsgSep                            string                  // current setting for the Relaymsg separator(s)
 	CasemapFailures                        atomic.Int64            // Count of casemapping errors
 	RelayMsgFailures                       atomic.Int64            // Count of general relaymsg errors
+	threads                                *ircThreads             // for PreserveThreading, see threading.go
 
 	*bridge.Config
 }
@@ -65,6 +66,7 @@ func New(cfg *bridge.Config) bridge.Bridger {
 	b.connected = make(chan error)
 	b.names = make(map[string][]string)
 	b.channels = make(map[string]bool)
+	b.threads = newIRCThreads()
 
 	if b.GetInt("MessageDelay") == 0 {
 		b.MessageDelay = 1300
@@ -131,11 +133,13 @@ func (b *Birc) Connect() error {
 		}
 	}
 
+	b.setupThreading(i)
+
 	// TODO: Rework these so that any of the ones which sleep() don't step on each other when backgrounded.
 	i.Handlers.Add(girc.RPL_WELCOME, b.handleNewConnection)
 	i.Handlers.Add(girc.RPL_ENDOFMOTD, b.handleOtherAuth)
 	i.Handlers.Add(girc.ERR_NOMOTD, b.handleOtherAuth)
-	i.Handlers.Add(girc.ALL_EVENTS, b.handleOther)
+	otherHandler := i.Handlers.Add(girc.ALL_EVENTS, b.handleOther)
 	b.i = i
 
 	go b.doJoin()
@@ -153,7 +157,7 @@ func (b *Birc) Connect() error {
 		b.Log.Info("Connection succeeded for bridge " + b.Account)
 		b.FirstConnection.Store(false)
 		if b.GetInt("DebugLevel") == 0 {
-			i.Handlers.Clear(girc.ALL_EVENTS)
+			i.Handlers.Remove(otherHandler) // threading has an ALL_EVENTS handler too
 		}
 	}(b.quit)
 
@@ -246,6 +250,9 @@ func (b *Birc) Send(msg config.Message) (string, error) {
 		}
 	}
 
+	localID := b.newSendID()
+	msg.ID = localID // on the first line only, see tagLine()
+
 	// TODO: Implement ircv3 draft/multiline capabilities.
 	// b.MessageLength will still correspond to the LINELEN token from RPL_ISUPPORT, which still defaults to 512,
 	// even when draft/multiline is enabled.  We'll also need to handle max-bytes and max-lines values for multiline
@@ -262,6 +269,7 @@ func (b *Birc) Send(msg config.Message) (string, error) {
 			msg.Text = msgLines[i]
 
 			b.Local <- msg
+			msg.ID = ""
 		}
 	} else { // Not splitting messages.  Hopefully girc does it, or else the server might silently drop it
 		if len(msg.Text)+prefix > (int(b.maxLen.Load()) + defaultMaxPrefix) {
@@ -270,8 +278,7 @@ func (b *Birc) Send(msg config.Message) (string, error) {
 
 		b.Local <- msg
 	}
-	// TODO: support for ircv3 msgid's
-	return "", nil
+	return localID, nil
 }
 
 func (b *Birc) doJoin() {
@@ -392,12 +399,12 @@ func (b *Birc) doSend() {
 
 				if msg.Event == config.EventUserAction {
 					if !b.GetBool("MessageSplit") {
-						err := b.i.Cmd.SendRawf("RELAYMSG %s %s :\x01ACTION %s\x01", msg.Channel, username, text)
+						err := b.i.Cmd.SendRaw(b.tagLine(&msg, fmt.Sprintf("RELAYMSG %s %s :\x01ACTION %s\x01", msg.Channel, username, text)))
 						if err != nil {
-							b.Log.Warn("Error in SendRawf")
+							b.Log.Warn("Error in SendRaw")
 						}
 					} else {
-						cmdline := fmt.Sprintf("RELAYMSG %s %s :\x01ACTION %s\x01\r\n", msg.Channel, username, text)
+						cmdline := b.tagLine(&msg, fmt.Sprintf("RELAYMSG %s %s :\x01ACTION %s\x01\r\n", msg.Channel, username, text))
 						err := b.i.Cmd.SendRawNoSplit(cmdline)
 						if err != nil {
 							b.Log.Warn("Error in SendRawNoSplit")
@@ -406,12 +413,12 @@ func (b *Birc) doSend() {
 				} else {
 					b.Log.Debugf("Sending RELAYMSG to channel %s: nick=%s", msg.Channel, username)
 					if !b.GetBool("MessageSplit") {
-						err := b.i.Cmd.SendRawf("RELAYMSG %s %s :%s", msg.Channel, username, text)
+						err := b.i.Cmd.SendRaw(b.tagLine(&msg, fmt.Sprintf("RELAYMSG %s %s :%s", msg.Channel, username, text)))
 						if err != nil {
-							b.Log.Warn("Error in SendRawf")
+							b.Log.Warn("Error in SendRaw")
 						}
 					} else {
-						cmdline := fmt.Sprintf("RELAYMSG %s %s :%s\r\n", msg.Channel, username, text)
+						cmdline := b.tagLine(&msg, fmt.Sprintf("RELAYMSG %s %s :%s\r\n", msg.Channel, username, text))
 						err := b.i.Cmd.SendRawNoSplit(cmdline)
 						if err != nil {
 							b.Log.Warn("Error in SendRawNoSplit")
@@ -436,6 +443,7 @@ func (b *Birc) doSend() {
 			cmdline = fmt.Sprintf("PRIVMSG %s :%s", msg.Channel, username+msg.Text)
 			b.Log.Debugf("Sending to channel %s", msg.Channel)
 		}
+		cmdline = b.tagLine(&msg, cmdline)
 
 		if !b.GetBool("MessageSplit") {
 			err := b.i.Cmd.SendRaw(cmdline)

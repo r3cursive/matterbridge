@@ -245,6 +245,16 @@ UseRelayFallback=true
 #OPTIONAL (default "unknown")
 RelayFallbackNick="unknown"
 
+#Opportunistically preserve threaded replies between bridges that support threading.
+#Needs a server with the IRCv3 message-tags capability. Replies from other bridges are
+#sent with the +draft/reply tag, which clients such as IRCCloud show as threads, and
+#IRC replies are passed on so bridges like discord (with PreserveThreading) can thread them.
+#Replying to messages relayed from other bridges also needs the echo-message capability,
+#and works best with labeled-response.
+#Without these capabilities, or if the server denies the reply tag, messages are sent unthreaded.
+#OPTIONAL (default false)
+PreserveThreading=false
+
 
 ###################################################################
 #XMPP section

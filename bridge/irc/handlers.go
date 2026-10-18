@@ -529,6 +529,9 @@ func (b *Birc) handleNotice(client *girc.Client, event girc.Event) {
 }
 
 func (b *Birc) handleOther(client *girc.Client, event girc.Event) {
+	if event.Echo { // with PreserveThreading, our own messages, NickServ passwords included
+		return
+	}
 	if b.GetInt("DebugLevel") == 1 {
 		if event.Command != "CLIENT_STATE_UPDATED" &&
 			event.Command != "CLIENT_GENERAL_UPDATED" {
@@ -667,6 +670,7 @@ func (b *Birc) handlePrivMsg(client *girc.Client, event girc.Event) {
 		rmsg.Text = rmsg.Text[8 : len(rmsg.Text)-1]
 	}
 
+	b.threadIncoming(&rmsg, event)
 	b.Log.Debugf("<= Sending message from %s on %s to gateway", event.Params[0], b.Account)
 	b.Remote <- rmsg
 }

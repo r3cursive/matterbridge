@@ -186,6 +186,25 @@ Default: "1m"
   PingDelay="1m"
   ```
 
+## PreserveThreading
+
+Opportunistically preserve threaded replies between bridges that support threading, using IRCv3 message tags.
+
+- Replies from other bridges are sent with the `+draft/reply` client tag, which clients such as IRCCloud show as threads. This needs the `message-tags` capability, and the server must not deny the tag with `CLIENTTAGDENY`.
+- Replies made on IRC are passed on with their parent, so a bridge such as Discord can thread them if it has `PreserveThreading` enabled too.
+- Replying to a message relayed to IRC from another bridge also needs `echo-message`, which tells the bridge the message's ID on IRC. With `labeled-response` the bridge recognises those echoes even when the server changes the text, for example with channel mode `+S`.
+
+When the server lacks a capability, messages are sent unthreaded.
+Threads are only kept while the parent message is in the gateway's cache, which is flushed on restart.
+
+- Setting: **OPTIONAL**
+- Default: *false*
+- Format: *boolean*
+- Example:
+  ```toml
+  PreserveThreading=true
+  ```
+
 ## RejoinDelay
 Delay in seconds to rejoin a channel when kicked
 
