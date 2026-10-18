@@ -16,8 +16,8 @@ import (
 // IRCv3 support for PreserveThreading.
 //
 // IRC has no message IDs of its own, but servers with the message-tags capability give
-// each message a msgid tag and relay the +draft/reply client tag, which clients such as
-// IRCCloud use to show replies as threads. See
+// each message a msgid tag and relay the +reply (formerly +draft/reply) client tag, which
+// clients such as IRCCloud use to show replies as threads. See
 // https://ircv3.net/specs/extensions/message-ids and
 // https://ircv3.net/specs/client-tags/reply
 //
@@ -35,7 +35,7 @@ const (
 	tagLabel           = "label"
 	tagMsgID           = "msgid"
 	tagReply           = "+draft/reply"
-	tagReplyFinal      = "+reply" // name the tag will have once ratified, some clients send both
+	tagReplyFinal      = "+reply" // the ratified name, servers and clients still use both
 	localIDPrefix      = "mbirc-"
 
 	threadCacheSize   = 5000
@@ -47,7 +47,8 @@ const (
 // ISUPPORT lines rather than asked of girc, because Send() must not wait on girc's client
 // lock, which is held while dialing.
 type ircCaps struct {
-	echo, labels, tags, replyDenied atomic.Bool
+	echo, labels, tags            atomic.Bool
+	draftReplyDenied, replyDenied atomic.Bool // by CLIENTTAGDENY
 }
 
 // canTrackEchoes reports whether we can learn the msgid of messages we send.
@@ -55,9 +56,19 @@ func (c *ircCaps) canTrackEchoes() bool {
 	return c != nil && c.tags.Load() && c.echo.Load()
 }
 
-// canTagReplies reports whether the server will relay +draft/reply for us.
-func (c *ircCaps) canTagReplies() bool {
-	return c != nil && c.tags.Load() && !c.replyDenied.Load()
+// replyTags returns the reply tags the server will relay for us.
+func (c *ircCaps) replyTags() []string {
+	if c == nil || !c.tags.Load() {
+		return nil
+	}
+	var tags []string
+	if !c.draftReplyDenied.Load() {
+		tags = append(tags, tagReply)
+	}
+	if !c.replyDenied.Load() {
+		tags = append(tags, tagReplyFinal)
+	}
+	return tags
 }
 
 func (c *ircCaps) update(event girc.Event) {
@@ -80,8 +91,10 @@ func (c *ircCaps) update(event girc.Event) {
 		for _, token := range event.Params {
 			switch name, value, _ := strings.Cut(token, "="); name {
 			case "CLIENTTAGDENY":
-				c.replyDenied.Store(clientTagDenied(value, strings.TrimPrefix(tagReply, "+")))
+				c.draftReplyDenied.Store(clientTagDenied(value, strings.TrimPrefix(tagReply, "+")))
+				c.replyDenied.Store(clientTagDenied(value, strings.TrimPrefix(tagReplyFinal, "+")))
 			case "-CLIENTTAGDENY":
+				c.draftReplyDenied.Store(false)
 				c.replyDenied.Store(false)
 			}
 		}
@@ -89,6 +102,7 @@ func (c *ircCaps) update(event girc.Event) {
 		c.echo.Store(false)
 		c.labels.Store(false)
 		c.tags.Store(false)
+		c.draftReplyDenied.Store(false)
 		c.replyDenied.Store(false)
 	}
 }
@@ -245,7 +259,7 @@ func (t *ircThreads) seen(msgID, channel string) {
 	t.channels.Add(msgID, channel)
 }
 
-// replyTarget returns the msgid to put in a +draft/reply tag for a gateway parent ID, or "" if unknown.
+// replyTarget returns the msgid to put in the reply tags for a gateway parent ID, or "" if unknown.
 // The parent is either a local ID we returned from Send(), or the msgid of a message that came from IRC.
 // When the parent never reached IRC the gateway hands us its ID on another bridge instead, so only
 // msgids seen in this channel are replied to.
@@ -306,7 +320,7 @@ func (b *Birc) newSendID() string {
 	return newLocalID()
 }
 
-// tagLine adds IRCv3 tags to a raw line doSend is about to send for msg: the reply tag when
+// tagLine adds IRCv3 tags to a raw line doSend is about to send for msg: the reply tags when
 // msg replies to a message seen on IRC, and a label on the first line of a message Send()
 // returned an ID for. Without labeled-response or MessageSplit the line is remembered to match its
 // echo by text.
@@ -320,9 +334,12 @@ func (b *Birc) tagLine(msg *config.Message, line string) string {
 	}
 
 	var tags []string
-	if msg.ParentValid() && caps.canTagReplies() {
+	if replyTags := caps.replyTags(); msg.ParentValid() && len(replyTags) > 0 {
 		if target := b.threads.replyTarget(msg.ParentID, msg.Channel); target != "" {
-			tags = append(tags, tagReply+"="+target)
+			// +reply is the ratified name, +draft/reply what servers and clients have used so far
+			for _, tag := range replyTags {
+				tags = append(tags, tag+"="+target)
+			}
 		}
 	}
 

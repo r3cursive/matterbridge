@@ -2,6 +2,7 @@ package birc
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -59,25 +60,27 @@ func TestReplyParent(t *testing.T) {
 func TestCapsFollowNegotiation(t *testing.T) {
 	var none *ircCaps
 	assert.False(t, none.canTrackEchoes())
-	assert.False(t, none.canTagReplies())
+	assert.Empty(t, none.replyTags())
 
 	caps := &ircCaps{}
 	caps.update(girc.Event{Command: girc.CAP, Params: []string{"bridge", girc.CAP_ACK, "message-tags echo-message labeled-response batch"}})
 	assert.True(t, caps.canTrackEchoes())
-	assert.True(t, caps.canTagReplies())
+	assert.Equal(t, []string{tagReply, tagReplyFinal}, caps.replyTags())
 	assert.True(t, caps.labels.Load())
 
 	caps.update(girc.Event{Command: girc.RPL_ISUPPORT, Params: []string{"bridge", "NETWORK=Fake", "CLIENTTAGDENY=*", "are supported by this server"}})
-	assert.False(t, caps.canTagReplies(), "CLIENTTAGDENY=* blocks the reply tag")
+	assert.Empty(t, caps.replyTags(), "CLIENTTAGDENY=* blocks the reply tags")
+	caps.update(girc.Event{Command: girc.RPL_ISUPPORT, Params: []string{"bridge", "CLIENTTAGDENY=*,-reply", "are supported by this server"}})
+	assert.Equal(t, []string{tagReplyFinal}, caps.replyTags(), "each tag is checked on its own")
 	caps.update(girc.Event{Command: girc.RPL_ISUPPORT, Params: []string{"bridge", "-CLIENTTAGDENY", "are supported by this server"}})
-	assert.True(t, caps.canTagReplies())
+	assert.Equal(t, []string{tagReply, tagReplyFinal}, caps.replyTags())
 
 	caps.update(girc.Event{Command: girc.CAP, Params: []string{"bridge", girc.CAP_DEL, "echo-message"}})
 	assert.False(t, caps.canTrackEchoes())
-	assert.True(t, caps.canTagReplies())
+	assert.NotEmpty(t, caps.replyTags())
 
 	caps.update(girc.Event{Command: girc.DISCONNECTED, Params: []string{"127.0.0.1:6667"}})
-	assert.False(t, caps.canTagReplies())
+	assert.Empty(t, caps.replyTags())
 	assert.False(t, caps.labels.Load())
 }
 
@@ -198,6 +201,7 @@ func TestThreadingWithFullSupport(t *testing.T) {
 		reply := server.awaitSent(before + 2)[before+1]
 		assert.Equal(t, "<WhaTheSht> hilarious hearing this from a pats fan", reply.text)
 		assert.Equal(t, msgID, reply.tags[tagReply])
+		assert.Equal(t, msgID, reply.tags[tagReplyFinal], "the ratified tag is sent alongside the draft one")
 	})
 
 	t.Run("reply to a message from irc is threaded", func(t *testing.T) {
@@ -244,6 +248,7 @@ func TestThreadingWithFullSupport(t *testing.T) {
 		}
 		for _, line := range server.awaitSent(before + len(parents))[before:] {
 			assert.NotContains(t, line.tags, tagReply, line.text)
+			assert.NotContains(t, line.tags, tagReplyFinal, line.text)
 		}
 	})
 
@@ -392,14 +397,16 @@ func TestThreadingFallsBack(t *testing.T) {
 		config       string
 		tracksEchoes bool
 		labels       bool
-		sendsTags    bool
+		replyTags    []string
 	}{
-		{"PreserveThreading off", allCaps, nil, "", false, false, false},
-		{"no message-tags", []string{capEchoMessage, capLabeledResponse}, nil, "PreserveThreading=true", false, false, false},
-		{"no echo-message", []string{capMessageTags, capLabeledResponse}, nil, "PreserveThreading=true", false, false, true},
-		{"no labeled-response", []string{capMessageTags, capEchoMessage}, nil, "PreserveThreading=true", true, false, true},
-		{"reply tag denied", allCaps, []string{"CLIENTTAGDENY=*"}, "PreserveThreading=true", true, true, false},
-		{"reply tag allowed by exception", allCaps, []string{"CLIENTTAGDENY=*,-draft/reply"}, "PreserveThreading=true", true, true, true},
+		{"PreserveThreading off", allCaps, nil, "", false, false, nil},
+		{"no message-tags", []string{capEchoMessage, capLabeledResponse}, nil, "PreserveThreading=true", false, false, nil},
+		{"no echo-message", []string{capMessageTags, capLabeledResponse}, nil, "PreserveThreading=true", false, false, []string{tagReply, tagReplyFinal}},
+		{"no labeled-response", []string{capMessageTags, capEchoMessage}, nil, "PreserveThreading=true", true, false, []string{tagReply, tagReplyFinal}},
+		{"reply tags denied", allCaps, []string{"CLIENTTAGDENY=*"}, "PreserveThreading=true", true, true, nil},
+		{"draft tag allowed by exception", allCaps, []string{"CLIENTTAGDENY=*,-draft/reply"}, "PreserveThreading=true", true, true, []string{tagReply}},
+		{"ratified tag allowed by exception", allCaps, []string{"CLIENTTAGDENY=*,-reply"}, "PreserveThreading=true", true, true, []string{tagReplyFinal}},
+		{"UnrealIRCd 6 default", allCaps, []string{"CLIENTTAGDENY=*,-draft/typing,-typing,-draft/channel-context,-draft/reply,-reply"}, "PreserveThreading=true", true, true, []string{tagReply, tagReplyFinal}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -430,10 +437,12 @@ func TestThreadingFallsBack(t *testing.T) {
 			} else {
 				assert.Empty(t, lines[0].tags)
 			}
-			if tc.sendsTags {
-				assert.Equal(t, msgID, lines[1].tags[tagReply])
-			} else {
-				assert.NotContains(t, lines[1].tags, tagReply)
+			for _, tag := range []string{tagReply, tagReplyFinal} {
+				if slices.Contains(tc.replyTags, tag) {
+					assert.Equal(t, msgID, lines[1].tags[tag], tag)
+				} else {
+					assert.NotContains(t, lines[1].tags, tag)
+				}
 			}
 		})
 	}
