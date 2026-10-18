@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lrstanley/girc"
@@ -25,25 +26,26 @@ import (
 )
 
 type Birc struct {
-	i                                         *girc.Client
-	Nick                                      string       // use getNick/setNick once connected, handlers run concurrently
-	nickMu                                    sync.RWMutex // protect Nick
-	names                                     map[string][]string
-	namesMu                                   sync.RWMutex // protect the names map from concurrent write attempts
-	connected                                 chan error
-	Local                                     chan config.Message // local queue for flood control
-	FirstConnection, authDone, botModeDone    bool
-	caseMapDone, prefixDone, relayMsgDone     bool
-	maxLen                                    int // MaxEventLength setting queried from girc, set after connecting
-	MessageDelay, MessageQueue, MessageLength int
-	MessagePrefix                             int                     // subtracted from MessageLength, set on channel join
-	channels                                  map[string]bool         // list of channels to join, in case we need an invite
-	channelsMu                                sync.RWMutex            // to protect the channels map
-	channelsChan                              chan config.ChannelInfo // for async irc channel joins
-	Casemapping                               string                  // current setting for the CASEMAPPING token in use
-	RelayMsgSep                               string                  // current setting for the Relaymsg separator(s)
-	CasemapFailures                           int                     // Count of casemapping errors
-	RelayMsgFailures                          int                     // Count of general relaymsg errors
+	i                                      *girc.Client
+	Nick                                   string       // use getNick/setNick once connected, handlers run concurrently
+	nickMu                                 sync.RWMutex // protect Nick
+	names                                  map[string][]string
+	namesMu                                sync.RWMutex // protect the names map from concurrent write attempts
+	connected                              chan error
+	Local                                  chan config.Message // local queue for flood control
+	FirstConnection, authDone, botModeDone atomic.Bool         // connection state is shared with girc handlers
+	caseMapDone, prefixDone, relayMsgDone  atomic.Bool
+	maxLen                                 atomic.Int64 // MaxEventLength setting queried from girc, set after connecting
+	MessageDelay, MessageQueue             int
+	MessageLength                          atomic.Int64
+	MessagePrefix                          atomic.Int64            // subtracted from MessageLength, set on channel join
+	channels                               map[string]bool         // list of channels to join, in case we need an invite
+	channelsMu                             sync.RWMutex            // to protect the channels map
+	channelsChan                           chan config.ChannelInfo // for async irc channel joins
+	Casemapping                            string                  // current setting for the CASEMAPPING token in use
+	RelayMsgSep                            string                  // current setting for the Relaymsg separator(s)
+	CasemapFailures                        atomic.Int64            // Count of casemapping errors
+	RelayMsgFailures                       atomic.Int64            // Count of general relaymsg errors
 
 	*bridge.Config
 }
@@ -73,13 +75,13 @@ func New(cfg *bridge.Config) bridge.Bridger {
 	}
 
 	if b.GetInt("MessageLength") == 0 {
-		b.MessageLength = 512 // default per RFC 2812
+		b.MessageLength.Store(512) // default per RFC 2812
 	} else {
-		b.MessageLength = b.GetInt("MessageLength")
+		b.MessageLength.Store(int64(b.GetInt("MessageLength")))
 	}
 
-	b.CasemapFailures = 0
-	b.RelayMsgFailures = 0
+	b.CasemapFailures.Store(0)
+	b.RelayMsgFailures.Store(0)
 
 	if b.GetBool("UseRelayMsg") && b.GetBool("Colornicks") {
 		b.Log.Warn("UseRelayMsg and Colornicks settings are not compatible with each other!")
@@ -92,7 +94,7 @@ func New(cfg *bridge.Config) bridge.Bridger {
 		b.SetBool("UseRelayFallback", true)
 	}
 
-	b.FirstConnection = true
+	b.FirstConnection.Store(true)
 
 	return b
 }
@@ -111,11 +113,11 @@ func (b *Birc) Connect() error {
 		return err
 	}
 
-	b.authDone = false
-	b.botModeDone = false
-	b.prefixDone = false
-	b.caseMapDone = false
-	b.relayMsgDone = false
+	b.authDone.Store(false)
+	b.botModeDone.Store(false)
+	b.prefixDone.Store(false)
+	b.caseMapDone.Store(false)
+	b.relayMsgDone.Store(false)
 
 	if b.GetBool("UseSASL") {
 		i.Config.SASL = &girc.SASLPlain{
@@ -140,7 +142,7 @@ func (b *Birc) Connect() error {
 		<-b.connected
 
 		b.Log.Info("Connection succeeded for bridge " + b.Account)
-		b.FirstConnection = false
+		b.FirstConnection.Store(false)
 		if b.GetInt("DebugLevel") == 0 {
 			b.i.Handlers.Clear(girc.ALL_EVENTS)
 		}
@@ -154,19 +156,19 @@ func (b *Birc) Disconnect() error {
 	close(b.Local)
 	close(b.channelsChan)
 
-	b.authDone = false
-	b.botModeDone = false
-	b.prefixDone = false
-	b.caseMapDone = false
-	b.relayMsgDone = false
+	b.authDone.Store(false)
+	b.botModeDone.Store(false)
+	b.prefixDone.Store(false)
+	b.caseMapDone.Store(false)
+	b.relayMsgDone.Store(false)
 
-	if b.CasemapFailures > 1 && b.Casemapping == CM_ASCII { // Maybe something got fixed, let's reset
-		b.CasemapFailures = 0
+	if b.CasemapFailures.Load() > 1 && b.Casemapping == CM_ASCII { // Maybe something got fixed, let's reset
+		b.CasemapFailures.Store(0)
 	}
 
-	if b.RelayMsgFailures > 0 {
-		b.Log.Debugf("RelayMsgFailures count: %d Current separator list: %s", b.RelayMsgFailures, b.RelayMsgSep)
-		b.RelayMsgFailures = 0
+	if b.RelayMsgFailures.Load() > 0 {
+		b.Log.Debugf("RelayMsgFailures count: %d Current separator list: %s", b.RelayMsgFailures.Load(), b.RelayMsgSep)
+		b.RelayMsgFailures.Store(0)
 	}
 
 	return nil
@@ -196,7 +198,7 @@ func (b *Birc) Send(msg config.Message) (string, error) {
 	//	return "", nil
 	// }
 
-	if !b.prefixDone { // we haven't joined a channel yet.  drop the message
+	if !b.prefixDone.Load() { // we haven't joined a channel yet.  drop the message
 		return "", nil
 	}
 
@@ -238,7 +240,7 @@ func (b *Birc) Send(msg config.Message) (string, error) {
 	//
 	// For now, we'll repurpose the MessageSplit setting to hand off the whole message to girc when set to false.
 	if b.GetBool("MessageSplit") {
-		msgLines := helper.GetSubLinesWords(msg.Text, b.MessageLength-prefix, b.GetString("MessageClipped"))
+		msgLines := helper.GetSubLinesWords(msg.Text, int(b.MessageLength.Load())-prefix, b.GetString("MessageClipped"))
 		for i := range msgLines {
 			if len(b.Local) >= b.MessageQueue {
 				b.Log.Debugf("flooding, dropping message (queue at %d)", len(b.Local))
@@ -250,7 +252,7 @@ func (b *Birc) Send(msg config.Message) (string, error) {
 			b.Local <- msg
 		}
 	} else { // Not splitting messages.  Hopefully girc does it, or else the server might silently drop it
-		if len(msg.Text)+prefix > (b.maxLen + defaultMaxPrefix) {
+		if len(msg.Text)+prefix > (int(b.maxLen.Load()) + defaultMaxPrefix) {
 			b.Log.Warn("Warning: Large message possibly dropped instead of sent")
 		}
 
@@ -266,7 +268,7 @@ func (b *Birc) doJoin() {
 	rate := time.Millisecond * time.Duration(b.MessageDelay)
 	throttle := time.NewTicker(rate)
 	for channel := range b.channelsChan {
-		for !b.authDone { // need to check if we have nickserv auth done before joining channels
+		for !b.authDone.Load() { // need to check if we have nickserv auth done before joining channels
 			time.Sleep(time.Second)
 		}
 
@@ -291,7 +293,7 @@ func (b *Birc) doConnect() {
 		err := b.i.DialerConnect(&net.Dialer{Timeout: 500 * time.Second})
 		if err != nil {
 			b.Log.Errorf("disconnect: error: %s", err)
-			if b.FirstConnection {
+			if b.FirstConnection.Load() {
 				// try again
 				// this will completely spam the log if the server port is closed, so sleep a bit
 				time.Sleep(2 * time.Second)
@@ -301,14 +303,14 @@ func (b *Birc) doConnect() {
 			b.Log.Info("disconnect: client requested quit")
 		}
 
-		b.authDone = false
-		b.botModeDone = false
-		b.caseMapDone = false
-		b.prefixDone = false
-		b.relayMsgDone = false
+		b.authDone.Store(false)
+		b.botModeDone.Store(false)
+		b.caseMapDone.Store(false)
+		b.prefixDone.Store(false)
+		b.relayMsgDone.Store(false)
 
-		b.CasemapFailures = 0
-		b.RelayMsgFailures = 0
+		b.CasemapFailures.Store(0)
+		b.RelayMsgFailures.Store(0)
 
 		b.Log.Info(b.Account + " reconnecting in 60 seconds...")
 		time.Sleep(60 * time.Second) // Sleep 60 seconds so as not to regress 42wim#267
@@ -325,7 +327,7 @@ func (b *Birc) doSend() {
 	rate := time.Millisecond * time.Duration(b.MessageDelay)
 	throttle := time.NewTicker(rate)
 	for msg := range b.Local {
-		if !b.authDone || !b.prefixDone {
+		if !b.authDone.Load() || !b.prefixDone.Load() {
 			// If we're not logged in or joined to any channel yet, discard the message
 			continue
 		}
@@ -548,7 +550,7 @@ func (b *Birc) handleCommand(msg *config.Message) string {
 // Count the size of the prefix for message splitting, while also applying the Colornicks setting (if set).
 // Always check that b.prefixDone is true before calling this.
 func (b *Birc) handlePrefix(msg *config.Message) int {
-	prefix := b.MessagePrefix + len(msg.Username) + len(msg.Channel)
+	prefix := int(b.MessagePrefix.Load()) + len(msg.Username) + len(msg.Channel)
 
 	// account for spaces, command names, and other padding
 	// TODO: make these len()'s into constants?  But the go compiler does that anyway, so no performance loss here

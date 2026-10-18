@@ -152,13 +152,13 @@ func (b *Birc) handleJoinPartQUIT(client *girc.Client, event girc.Event) {
 
 	if event.Source.Name == b.getNick() && strings.Contains(event.Last(), "Ping timeout") {
 		b.Log.Infof("%s reconnecting ..", b.Account)
-		b.authDone = false
-		b.botModeDone = false
-		b.prefixDone = false
-		b.caseMapDone = false
-		b.relayMsgDone = false
-		b.CasemapFailures = 0
-		b.RelayMsgFailures = 0
+		b.authDone.Store(false)
+		b.botModeDone.Store(false)
+		b.prefixDone.Store(false)
+		b.caseMapDone.Store(false)
+		b.relayMsgDone.Store(false)
+		b.CasemapFailures.Store(0)
+		b.RelayMsgFailures.Store(0)
 
 		b.Remote <- config.Message{Username: "system", Text: "reconnect", Channel: channel, Account: b.Account, Event: config.EventFailure}
 	}
@@ -166,7 +166,7 @@ func (b *Birc) handleJoinPartQUIT(client *girc.Client, event girc.Event) {
 
 // Unless we generate another event first, channel join is the first chance to find our current prefix
 func (b *Birc) handleJoinPartPrefix(client *girc.Client, event girc.Event) {
-	if b.prefixDone || event.Source.Name != b.getNick() {
+	if b.prefixDone.Load() || event.Source.Name != b.getNick() {
 		return
 	}
 
@@ -184,17 +184,17 @@ func (b *Birc) handleJoinPartPrefix(client *girc.Client, event girc.Event) {
 		return
 	}
 
-	b.MessagePrefix = len(b.getNick()) + len(user) + len(host) + 6 // 6 bytes for ':', '!', '@', ' ' and a trailing CRLF
-	b.SetInt("MessagePrefix", b.MessagePrefix)
+	b.MessagePrefix.Store(int64(len(b.getNick()) + len(user) + len(host) + 6)) // 6 bytes for ':', '!', '@', ' ' and a trailing CRLF
+	b.SetInt("MessagePrefix", int(b.MessagePrefix.Load()))
 
 	// Work around girc using max prefix length instead of actual prefix length
-	if (defaultMaxPrefix + b.maxLen - b.MessagePrefix) > (b.MessageLength - b.MessagePrefix) {
+	if (defaultMaxPrefix + b.maxLen.Load() - b.MessagePrefix.Load()) > (b.MessageLength.Load() - b.MessagePrefix.Load()) {
 		// Server supports extended lines
-		b.MessageLength = b.maxLen + defaultMaxPrefix
+		b.MessageLength.Store(b.maxLen.Load() + defaultMaxPrefix)
 	}
 
-	b.SetInt("MessageLength", b.MessageLength)
-	b.prefixDone = true
+	b.SetInt("MessageLength", int(b.MessageLength.Load()))
+	b.prefixDone.Store(true)
 }
 
 func (b *Birc) handleJoinPart(client *girc.Client, event girc.Event) {
@@ -241,7 +241,7 @@ func (b *Birc) handleCapRelay(client *girc.Client, event girc.Event) {
 	}
 
 	if len(event.Params) >= 3 && event.Params[1] == girc.CAP_LS || event.Params[1] == girc.CAP_NEW {
-		if b.relayMsgDone && event.Params[1] != girc.CAP_NEW {
+		if b.relayMsgDone.Load() && event.Params[1] != girc.CAP_NEW {
 			return // We're done here, unless the server has rehashed with a new separator
 		}
 
@@ -258,7 +258,7 @@ func (b *Birc) handleCapRelay(client *girc.Client, event girc.Event) {
 					b.RelayMsgSep = strings.TrimSpace(caps[cap][sep+1:])
 					b.Log.Debugf("RelayMsgSep value for %s set to %s", b.Account, b.RelayMsgSep)
 					b.SetString("RelayMsgSep", b.RelayMsgSep)
-					b.relayMsgDone = true
+					b.relayMsgDone.Store(true)
 
 					return
 				}
@@ -278,7 +278,7 @@ func (b *Birc) handleErrorCM(client *girc.Client, event girc.Event) {
 		return // another handler will log the error
 	}
 
-	if b.CasemapFailures > 1 && b.caseMapDone {
+	if b.CasemapFailures.Load() > 1 && b.caseMapDone.Load() {
 		// This may be a case of an incorrect RelayMsgSep instead, let the other handlers deal with it
 		return
 	}
@@ -290,24 +290,24 @@ func (b *Birc) handleErrorCM(client *girc.Client, event girc.Event) {
 		b.Casemapping = CM_ASCII
 		b.SetString("Casemapping", CM_ASCII)
 		b.Log.Debugf("Got RELAYMSG failure with permissive, falling back to ASCII on %s", b.Account)
-		b.caseMapDone = false
+		b.caseMapDone.Store(false)
 	case CM_ASCII:
 		b.Log.Info("RELAYMSG failure with ASCII setting on " + b.Account)
 		b.Log.Info("Next RELAYMSG nick failure will be assumed to be a missing separator")
-		b.caseMapDone = true
+		b.caseMapDone.Store(true)
 	default:
 		b.Casemapping = CM_ASCII
 		b.SetString("Casemapping", CM_ASCII)
 		b.Log.Debugf("RELAYMSG failure with %s setting, falling back to ASCII on %s", mymap, b.Account)
-		b.caseMapDone = false
+		b.caseMapDone.Store(false)
 	}
 
-	b.CasemapFailures += 1
+	b.CasemapFailures.Add(1)
 
 	b.Log.Warnf("Got a RELAYMSG failure: %s", event.Last())
-	b.RelayMsgFailures += 1
+	b.RelayMsgFailures.Add(1)
 	b.Log.Debugf("<= Message is %#v", event)
-	b.Log.Debugf("Error count is %d (casemap failures) %d (relaymsg failures)", b.CasemapFailures, b.RelayMsgFailures)
+	b.Log.Debugf("Error count is %d (casemap failures) %d (relaymsg failures)", b.CasemapFailures.Load(), b.RelayMsgFailures.Load())
 }
 
 func (b *Birc) handleErrorSEP(client *girc.Client, event girc.Event) {
@@ -321,12 +321,12 @@ func (b *Birc) handleErrorSEP(client *girc.Client, event girc.Event) {
 	case strings.Contains(text, "Relayed nicknames MUST contain"):
 		break
 	case strings.Contains(text, "Invalid nickname"):
-		if !b.caseMapDone || b.CasemapFailures <= 1 {
+		if !b.caseMapDone.Load() || b.CasemapFailures.Load() <= 1 {
 			return // It might be a wrong casemapping setting
 		}
 
 		// We've the wrong separator but nothing to do about it?  Try the CAP handler again
-		b.relayMsgDone = false
+		b.relayMsgDone.Store(false)
 		b.Log.Debugf("Sending a CAP LS 302 to check for RelayMsgSep on %s", b.Account)
 		client.Send(&girc.Event{Command: "CAP", Params: []string{"LS", "302"}})
 
@@ -343,7 +343,7 @@ func (b *Birc) handleErrorSEP(client *girc.Client, event girc.Event) {
 	sepindex := strings.LastIndex(text, " ")
 	if sepindex == (len(text)-1) && mysep == "" {
 		b.Log.Errorf("Relaymsg capability advertised for %s but no separator specified: %s", b.Account, text)
-		b.RelayMsgFailures += 1
+		b.RelayMsgFailures.Add(1)
 
 		return // maybe we should panic?
 	}
@@ -358,13 +358,13 @@ func (b *Birc) handleErrorSEP(client *girc.Client, event girc.Event) {
 		b.RelayMsgSep = strings.TrimSpace(sepchars)
 		b.Log.Infof("New relay separator char(s) for %s set by server: %s", b.Account, sepchars)
 		b.SetString("RelayMsgSep", b.RelayMsgSep)
-		b.relayMsgDone = true
+		b.relayMsgDone.Store(true)
 	}
 
 	b.Log.Warnf("Got a RELAYMSG failure: %s", event.Last())
-	b.RelayMsgFailures += 1
+	b.RelayMsgFailures.Add(1)
 	b.Log.Debugf("<= Message is %#v", event)
-	b.Log.Debugf("Error count is %d (casemap failures) %d (relaymsg failures)", b.CasemapFailures, b.RelayMsgFailures)
+	b.Log.Debugf("Error count is %d (casemap failures) %d (relaymsg failures)", b.CasemapFailures.Load(), b.RelayMsgFailures.Load())
 }
 
 func (b *Birc) handleErrorOther(client *girc.Client, event girc.Event) {
@@ -387,13 +387,13 @@ func (b *Birc) handleErrorOther(client *girc.Client, event girc.Event) {
 	//	fallthrough
 	// default:
 	b.Log.Errorf("Got a RELAYMSG failure: %s", event.Last())
-	b.RelayMsgFailures += 1
+	b.RelayMsgFailures.Add(1)
 	b.Log.Debugf("<= Message is %#v", event)
-	b.Log.Debugf("Error count is %d (casemap failures) %d (relaymsg failures)", b.CasemapFailures, b.RelayMsgFailures)
+	b.Log.Debugf("Error count is %d (casemap failures) %d (relaymsg failures)", b.CasemapFailures.Load(), b.RelayMsgFailures.Load())
 }
 
 func (b *Birc) handleISupportBOT(client *girc.Client, event girc.Event) {
-	if b.botModeDone {
+	if b.botModeDone.Load() {
 		return
 	}
 
@@ -401,12 +401,12 @@ func (b *Birc) handleISupportBOT(client *girc.Client, event girc.Event) {
 	if ok {
 		b.Log.Debugf("Server supports BOT: %s", result)
 		client.Send(&girc.Event{Command: girc.MODE, Params: []string{b.getNick(), "+" + result}})
-		b.botModeDone = true
+		b.botModeDone.Store(true)
 	}
 }
 
 func (b *Birc) handleISupportCM(client *girc.Client, event girc.Event) {
-	if !b.GetBool("UseRelayMsg") || b.caseMapDone {
+	if !b.GetBool("UseRelayMsg") || b.caseMapDone.Load() {
 		return // For now, we only do anything with Casemapping if using RelayMsg
 	}
 
@@ -451,7 +451,7 @@ func (b *Birc) handleISupportCM(client *girc.Client, event girc.Event) {
 		b.Log.Debugf("Setting initial Casemapping value on %s to: %s", b.Account, mymap)
 		b.Casemapping = mymap
 		b.SetString("Casemapping", mymap)
-		b.caseMapDone = true
+		b.caseMapDone.Store(true)
 	}
 }
 
@@ -515,7 +515,7 @@ func (b *Birc) handleNickServ() {
 	// give nickserv some slack
 	// TODO: Do this a different way, without sleeping
 	time.Sleep(time.Second * 5)
-	b.authDone = true
+	b.authDone.Store(true)
 }
 
 func (b *Birc) handleNotice(client *girc.Client, event girc.Event) {
@@ -544,7 +544,7 @@ func (b *Birc) handleOther(client *girc.Client, event girc.Event) {
 func (b *Birc) handleOtherAuth(client *girc.Client, event girc.Event) {
 	b.handleNickServ()
 	b.handleRunCommands()
-	b.maxLen = b.i.MaxEventLength() // Set this one time per (re)connect
+	b.maxLen.Store(int64(b.i.MaxEventLength())) // Set this one time per (re)connect
 
 	// TODO: Figure out why this wasn't caught the first time.
 	//
@@ -554,12 +554,12 @@ func (b *Birc) handleOtherAuth(client *girc.Client, event girc.Event) {
 	// The relaymsg capability is advertised with CAP LS, but the separator is only included with CAP LS 302.
 	//
 	// Send a CAP LS 302...
-	if b.GetBool("UseRelayMsg") && !b.relayMsgDone {
+	if b.GetBool("UseRelayMsg") && !b.relayMsgDone.Load() {
 		b.Log.Debugf("Requesting a CAP LS 302 to determine RelayMsgSep on %s", b.Account)
 		client.Send(&girc.Event{Command: "CAP", Params: []string{"LS", "302"}})
 	}
 
-	if b.GetBool("UseRelayMsg") && !b.caseMapDone {
+	if b.GetBool("UseRelayMsg") && !b.caseMapDone.Load() {
 		var mymap string
 
 		utf8mapcheck, ok := client.GetServerOption("UTF8MAPPING")
@@ -580,12 +580,12 @@ func (b *Birc) handleOtherAuth(client *girc.Client, event girc.Event) {
 		b.Log.Debugf("Setting initial Casemapping value on %s to: %s", b.Account, mymap)
 		b.Casemapping = mymap
 		b.SetString("Casemapping", mymap)
-		b.caseMapDone = true
+		b.caseMapDone.Store(true)
 	}
 
 	// we are now fully connected
 	// only send on first connection
-	if b.FirstConnection {
+	if b.FirstConnection.Load() {
 		b.connected <- nil
 	}
 }
