@@ -283,3 +283,16 @@ func enumerateUsernames(s string) []string {
 	}
 	return usernames
 }
+
+// markdownEscaper escapes what Discord would take as formatting.
+var markdownEscaper = strings.NewReplacer(`\`, `\\`, "*", `\*`, "_", `\_`, "~", `\~`, "`", "\\`", "|", `\|`, ">", `\>`)
+
+// webhookReplyUsername formats a username meant for a webhook's display name for use as a
+// prefix in a message sent by the bot.
+func webhookReplyUsername(username string) string {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return ""
+	}
+	return "**" + markdownEscaper.Replace(username) + "** "
+}

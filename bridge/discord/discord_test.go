@@ -157,3 +157,15 @@ func TestQuotesUseProcessedText(t *testing.T) {
 	assert.Equal(t, "@skud agreed :pog: (re @RustyCloud: @skud look at :pog: in #general)",
 		b.handleQuote(b.c, reply, "@skud agreed :pog:"))
 }
+
+func TestThreadedRepliesInWebhookChannels(t *testing.T) {
+	b, api := newTestBdiscord(t, "AutoWebhooks=true")
+
+	// webhooks can't reply, so the bot sends the reply with a username meant as a webhook display name
+	_, err := b.Send(config.Message{Text: "irc reply", Username: "RustyCloud", Channel: "general", ParentID: existingMessage})
+	require.NoError(t, err)
+	sent := api.last(t)
+	assert.Equal(t, "**RustyCloud** irc reply", sent.Content)
+	require.NotNil(t, sent.Reference)
+	assert.Equal(t, existingMessage, sent.Reference.MessageID)
+}

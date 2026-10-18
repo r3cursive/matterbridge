@@ -51,3 +51,12 @@ func TestIsSnowflake(t *testing.T) {
 		assert.False(t, isSnowflake(id), id)
 	}
 }
+
+func TestWebhookReplyUsername(t *testing.T) {
+	assert.Equal(t, "**RustyCloud** ", webhookReplyUsername("RustyCloud"))
+	assert.Equal(t, "**RustyCloud** ", webhookReplyUsername(" RustyCloud "))
+	assert.Equal(t, "", webhookReplyUsername(""))
+	// markdown in nicks is shown as typed
+	assert.Equal(t, `**Rusty\_Cloud** `, webhookReplyUsername("Rusty_Cloud"))
+	assert.Equal(t, `**\\o/ \*\~\`+"`"+`\|\>** `, webhookReplyUsername(`\o/ *~`+"`"+`|>`))
+}
