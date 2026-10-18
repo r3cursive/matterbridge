@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strings"
 	"sync"
 	"testing"
 
@@ -32,14 +33,22 @@ type sentDiscordMessage struct {
 }
 
 // fakeDiscordAPI records the messages the bot sends, and validates replies like Discord does.
+// It serves the messages in messages, as JSON by ID, for fetching quoted messages.
 type fakeDiscordAPI struct {
-	mu   sync.Mutex
-	sent []sentDiscordMessage
+	mu       sync.Mutex
+	sent     []sentDiscordMessage
+	messages map[string]string
 }
 
 var snowflake = regexp.MustCompile(`^[0-9]+$`)
 
 func (f *fakeDiscordAPI) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if id, ok := strings.CutPrefix(r.URL.Path, "/channels/"+testChannelID+"/messages/"); ok && r.Method == http.MethodGet {
+		if msg, ok := f.messages[id]; ok {
+			fmt.Fprint(w, msg)
+			return
+		}
+	}
 	if r.Method != http.MethodPost || r.URL.Path != "/channels/"+testChannelID+"/messages" {
 		http.NotFound(w, r)
 		return
@@ -128,4 +137,23 @@ func TestSendReplies(t *testing.T) {
 			assert.False(t, *sent.Reference.FailIfNotExists)
 		})
 	}
+}
+
+func TestQuotesUseProcessedText(t *testing.T) {
+	b, api := newTestBdiscord(t, "")
+	api.messages = map[string]string{existingMessage: `{
+		"id": "` + existingMessage + `", "channel_id": "` + testChannelID + `",
+		"content": "<@111> look at <:pog:222> in <#` + testChannelID + `>",
+		"author": {"id": "333", "username": "RustyCloud"},
+		"mentions": [{"id": "111", "username": "skud"}]
+	}`}
+
+	// messageCreate hands handleQuote the reply's text with mentions and emotes replaced
+	reply := &discordgo.Message{
+		ChannelID:        testChannelID,
+		Content:          "<@111> agreed <:pog:222>",
+		MessageReference: &discordgo.MessageReference{ChannelID: testChannelID, MessageID: existingMessage},
+	}
+	assert.Equal(t, "@skud agreed :pog: (re @RustyCloud: @skud look at :pog: in #general)",
+		b.handleQuote(b.c, reply, "@skud agreed :pog:"))
 }

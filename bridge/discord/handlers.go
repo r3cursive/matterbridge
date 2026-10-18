@@ -105,7 +105,13 @@ func (b *Bdiscord) handleQuote(s *discordgo.Session, m *discordgo.Message, msg s
 		return msg
 	}
 
-	quoteMessage := refMsg.Content
+	// replace mentions and emotes in the quoted message like messageCreate does for the reply
+	refMsg.Content = b.replaceChannelMentions(refMsg.Content)
+	quoteMessage, err := refMsg.ContentWithMoreMentionsReplaced(s)
+	if err != nil {
+		quoteMessage = refMsg.ContentWithMentionsReplaced()
+	}
+	quoteMessage = replaceEmotes(quoteMessage)
 	quoteNick := refMsg.Author.Username
 	fromWebhook := m.WebhookID != ""
 	if !fromWebhook && b.GetBool("UseDiscriminator") {
@@ -124,7 +130,7 @@ func (b *Bdiscord) handleQuote(s *discordgo.Session, m *discordgo.Message, msg s
 			quoteMessage += "..."
 		}
 	}
-	format = strings.ReplaceAll(format, "{MESSAGE}", m.Content)
+	format = strings.ReplaceAll(format, "{MESSAGE}", msg)
 	format = strings.ReplaceAll(format, "{QUOTENICK}", quoteNick)
 	format = strings.ReplaceAll(format, "{QUOTEMESSAGE}", quoteMessage)
 	return format
