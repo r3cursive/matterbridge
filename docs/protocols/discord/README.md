@@ -125,6 +125,20 @@ See <https://github.com/42wim/matterbridge/issues/1263> for more info
 
 No. 
 
+### How are Discord threads bridged?
+
+With `PreserveThreading=true`, messages in a thread are relayed as if posted in the thread's channel, as replies.
+Without it they aren't relayed.
+The first one replies to the message the thread was started from, or to the first message relayed from the thread when it was started without one.
+Bridges that thread replies, such as IRC with `PreserveThreading`, show the thread as a chain of replies.
+
+Replies from those bridges to a message in a thread, or to the message a thread was started from, are sent into the thread.
+With webhooks they keep the sender's name and avatar there.
+Matterbridge never creates threads.
+
+The bot joins new threads in bridged channels so it receives their messages.
+It is only told about private threads it can see, for example with the "Manage Threads" permission or when someone adds it.
+
 ### Replies show the botname instead of the username/avatar
 
 This is a discord limitation: https://github.com/42wim/matterbridge/issues/1558#issuecomment-1030713994

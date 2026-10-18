@@ -40,6 +40,8 @@ type Bdiscord struct {
 	useAutoWebhooks bool
 	transmitter     *transmitter.Transmitter
 	cache           *lru.Cache[string, string]
+
+	threads *discordThreads // see threads.go
 }
 
 func New(cfg *bridge.Config) bridge.Bridger {
@@ -49,8 +51,9 @@ func New(cfg *bridge.Config) bridge.Bridger {
 	}
 
 	b := &Bdiscord{
-		Config: cfg,
-		cache:  newCache,
+		Config:  cfg,
+		cache:   newCache,
+		threads: newDiscordThreads(),
 	}
 
 	b.userMemberMap = make(map[string]*discordgo.Member)
@@ -246,6 +249,7 @@ func (b *Bdiscord) Connect() error {
 	b.c.AddHandler(b.memberAdd)
 	b.c.AddHandler(b.memberRemove)
 	b.c.AddHandler(b.memberUpdate)
+	b.c.AddHandler(b.threadCreate)
 	if b.GetInt("debuglevel") == 1 {
 		b.c.AddHandler(b.messageEvent)
 	}
@@ -301,10 +305,14 @@ func (b *Bdiscord) Send(msg config.Message) (string, error) {
 		msg.ParentID = ""
 	}
 
+	if threadID := b.threadTarget(&msg, channelID); threadID != "" {
+		return b.sendToThread(msg, channelID, threadID)
+	}
+
 	// Use webhook to send the message
 	useWebhooks := b.shouldMessageUseWebhooks(&msg)
 	if useWebhooks && msg.Event != config.EventMsgDelete && msg.ParentID == "" {
-		return b.handleEventWebhook(&msg, channelID)
+		return b.handleEventWebhook(&msg, channelID, "")
 	}
 
 	// Webhooks can't reply, so threaded replies are sent by the bot. The username was

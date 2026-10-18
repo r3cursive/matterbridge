@@ -15,7 +15,7 @@ func (b *Bdiscord) messageDelete(s *discordgo.Session, m *discordgo.MessageDelet
 		return
 	}
 	rmsg := config.Message{Account: b.Account, ID: m.ID, Event: config.EventMsgDelete, Text: config.EventMsgDelete}
-	rmsg.Channel = b.getChannelName(m.ChannelID)
+	rmsg.Channel = b.getChannelOrThreadName(m.ChannelID)
 
 	b.Log.Debugf("<= Sending message from %s to gateway", b.Account)
 	b.Log.Debugf("<= Message is %#v", rmsg)
@@ -34,7 +34,7 @@ func (b *Bdiscord) messageDeleteBulk(s *discordgo.Session, m *discordgo.MessageD
 			ID:      msgID,
 			Event:   config.EventMsgDelete,
 			Text:    config.EventMsgDelete,
-			Channel: b.getChannelName(m.ChannelID),
+			Channel: b.getChannelOrThreadName(m.ChannelID),
 		}
 
 		b.Log.Debugf("<= Sending message from %s to gateway", b.Account)
@@ -151,6 +151,9 @@ func (b *Bdiscord) messageCreate(s *discordgo.Session, m *discordgo.MessageCreat
 	if m.Author.Bot && b.transmitter.HasWebhook(m.Author.ID) {
 		return
 	}
+	if isThreadSystemMessage(m.Message) {
+		return
+	}
 
 	rmsg := config.Message{Account: b.Account, Avatar: "https://cdn.discordapp.com/avatars/" + m.Author.ID + "/" + m.Author.Avatar + ".jpg", UserID: "@" + m.Author.Username, ID: m.ID, Extra: make(map[string][]any)} // here we use .jpg over .webp for wider support across bridges and clients in general. discord automatically converts as needed anyhow.
 
@@ -165,8 +168,12 @@ func (b *Bdiscord) messageCreate(s *discordgo.Session, m *discordgo.MessageCreat
 		}
 	}
 
-	// set channel name
+	// set channel name, messages in threads are relayed from the thread's channel
 	rmsg.Channel = b.getChannelName(m.ChannelID)
+	var threadParentID string
+	if rmsg.Channel == "" {
+		threadParentID, rmsg.Channel = b.getThreadChannel(m.ChannelID)
+	}
 
 	fromWebhook := m.WebhookID != ""
 	if !fromWebhook && !b.GetBool("UseUserName") {
@@ -206,6 +213,10 @@ func (b *Bdiscord) messageCreate(s *discordgo.Session, m *discordgo.MessageCreat
 	// no empty messages
 	if rmsg.Text == "" && len(m.Attachments) == 0 {
 		return
+	}
+
+	if threadParentID != "" {
+		b.handleThreadMessage(&rmsg, m.ChannelID, threadParentID)
 	}
 
 	// if no attachments, send the message as-is
