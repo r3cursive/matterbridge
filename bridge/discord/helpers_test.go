@@ -44,3 +44,10 @@ func TestEnumerateUsernames(t *testing.T) {
 		assert.Equalf(t, testcase.expectedUsernames, foundUsernames, "Should have found the expected usernames for testcase %s", testname)
 	}
 }
+
+func TestIsSnowflake(t *testing.T) {
+	assert.True(t, isSnowflake("1234567890123456789"))
+	for _, id := range []string{"", "irc msgid1", "mbirc-0123456789abcdef", "123;456", "-1", "+1", "99999999999999999999999"} {
+		assert.False(t, isSnowflake(id), id)
+	}
+}

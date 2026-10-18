@@ -3,6 +3,7 @@ package bdiscord
 import (
 	"errors"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -31,6 +32,12 @@ func (b *Bdiscord) getAllowedMentions() *discordgo.MessageAllowedMentions {
 	return &discordgo.MessageAllowedMentions{
 		Parse: allowedMentionTypes,
 	}
+}
+
+// isSnowflake reports whether id can be a Discord ID.
+func isSnowflake(id string) bool {
+	_, err := strconv.ParseUint(id, 10, 64)
+	return err == nil
 }
 
 func getGlobalNick(user *discordgo.User) string {

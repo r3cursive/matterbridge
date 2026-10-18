@@ -291,6 +291,16 @@ func (b *Bdiscord) Send(msg config.Message) (string, error) {
 		msg.ParentID = ""
 	}
 
+	// A message sent to Discord in several parts has the IDs of all of them, reply to the first.
+	msg.ParentID, _, _ = strings.Cut(msg.ParentID, ";")
+
+	// Discord can only reply to its own messages. When the parent never reached Discord the
+	// gateway hands us its ID on another bridge, which the API would reject with the message.
+	if msg.ParentID != "" && !isSnowflake(msg.ParentID) {
+		b.Log.Debugf("Not replying to %s, not a Discord message ID", msg.ParentID)
+		msg.ParentID = ""
+	}
+
 	// Use webhook to send the message
 	useWebhooks := b.shouldMessageUseWebhooks(&msg)
 	if useWebhooks && msg.Event != config.EventMsgDelete && msg.ParentID == "" {
@@ -373,10 +383,12 @@ func (b *Bdiscord) handleEventBotUser(msg *config.Message, channelID string) (st
 		}
 
 		if msg.ParentValid() {
+			failIfNotExists := false // send the reply anyway if the parent was deleted
 			m.Reference = &discordgo.MessageReference{
-				MessageID: msg.ParentID,
-				ChannelID: channelID,
-				GuildID:   b.guildID,
+				MessageID:       msg.ParentID,
+				ChannelID:       channelID,
+				GuildID:         b.guildID,
+				FailIfNotExists: &failIfNotExists,
 			}
 		}
 
