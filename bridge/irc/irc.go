@@ -32,6 +32,7 @@ type Birc struct {
 	names                                  map[string][]string
 	namesMu                                sync.RWMutex // protect the names map from concurrent write attempts
 	connected                              chan error
+	quit                                   chan struct{}       // closed by Disconnect() to stop the connection's goroutines
 	Local                                  chan config.Message // local queue for flood control
 	FirstConnection, authDone, botModeDone atomic.Bool         // connection state is shared with girc handlers
 	caseMapDone, prefixDone, relayMsgDone  atomic.Bool
@@ -53,6 +54,9 @@ type Birc struct {
 // Work around girc using max prefix length instead of actual prefix length
 // we do the check to extend b.MessageLength when the server supports it, in handleJoinPartPrefix in handlers.go
 const defaultMaxPrefix = 115 // 30 + 18 + 63 + 4 from girc's event.go
+
+// reconnectDelay is how long to wait before reconnecting, so as not to regress 42wim#267
+var reconnectDelay = 60 * time.Second
 
 func New(cfg *bridge.Config) bridge.Bridger {
 	b := &Birc{}
@@ -106,6 +110,7 @@ func (b *Birc) Connect() error {
 
 	b.Local = make(chan config.Message, b.MessageQueue+10)
 	b.channelsChan = make(chan config.ChannelInfo, b.MessageQueue+10)
+	b.quit = make(chan struct{})
 	b.Log.Infof("Connecting %s", b.GetString("Server"))
 
 	i, err := b.getClient()
@@ -135,26 +140,33 @@ func (b *Birc) Connect() error {
 
 	go b.doJoin()
 	go b.doSend()
-	go b.doConnect()
+	go b.doConnect(i, b.quit)
 
-	go func() {
+	go func(quit chan struct{}) {
 		// Block until something happens...
-		<-b.connected
+		select {
+		case <-b.connected:
+		case <-quit:
+			return
+		}
 
 		b.Log.Info("Connection succeeded for bridge " + b.Account)
 		b.FirstConnection.Store(false)
 		if b.GetInt("DebugLevel") == 0 {
-			b.i.Handlers.Clear(girc.ALL_EVENTS)
+			i.Handlers.Clear(girc.ALL_EVENTS)
 		}
-	}()
+	}(b.quit)
 
 	return nil
 }
 
 func (b *Birc) Disconnect() error {
+	close(b.quit)
 	b.i.Close()
 	close(b.Local)
 	close(b.channelsChan)
+	// the next Connect() makes a new client, whose connection is a first one again
+	b.FirstConnection.Store(true)
 
 	b.authDone.Store(false)
 	b.botModeDone.Store(false)
@@ -286,17 +298,28 @@ func (b *Birc) doJoin() {
 	}
 }
 
-func (b *Birc) doConnect() {
+// doConnect keeps client connected, until Disconnect() closes quit. The next Connect() makes a new
+// client with a loop of its own.
+func (b *Birc) doConnect(client *girc.Client, quit chan struct{}) {
 	for {
 		// TODO: support connecting using a proxy
 		// Since we're doing connections and joins asynchronously now, we can afford a generous timeout here
-		err := b.i.DialerConnect(&net.Dialer{Timeout: 500 * time.Second})
+		err := client.DialerConnect(&net.Dialer{Timeout: 500 * time.Second})
+		select {
+		case <-quit:
+			return
+		default:
+		}
 		if err != nil {
 			b.Log.Errorf("disconnect: error: %s", err)
 			if b.FirstConnection.Load() {
 				// try again
 				// this will completely spam the log if the server port is closed, so sleep a bit
-				time.Sleep(2 * time.Second)
+				select {
+				case <-quit:
+					return
+				case <-time.After(2 * time.Second):
+				}
 				continue
 			}
 		} else {
@@ -312,10 +335,14 @@ func (b *Birc) doConnect() {
 		b.CasemapFailures.Store(0)
 		b.RelayMsgFailures.Store(0)
 
-		b.Log.Info(b.Account + " reconnecting in 60 seconds...")
-		time.Sleep(60 * time.Second) // Sleep 60 seconds so as not to regress 42wim#267
-		b.i.Handlers.Clear(girc.RPL_WELCOME)
-		b.i.Handlers.Add(girc.RPL_WELCOME, func(client *girc.Client, event girc.Event) {
+		b.Log.Infof("%s reconnecting in %s...", b.Account, reconnectDelay)
+		select {
+		case <-quit:
+			return
+		case <-time.After(reconnectDelay):
+		}
+		client.Handlers.Clear(girc.RPL_WELCOME)
+		client.Handlers.Add(girc.RPL_WELCOME, func(client *girc.Client, event girc.Event) {
 			b.Remote <- config.Message{Username: "system", Text: "rejoin", Channel: "", Account: b.Account, Event: config.EventRejoinChannels}
 			// set our correct nick on reconnect if necessary
 			b.setNick(event.Source.Name)
