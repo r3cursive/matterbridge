@@ -42,3 +42,23 @@ func TestReconnectThroughTheGateway(t *testing.T) {
 	require.Eventually(t, func() bool { return tb.i.Handlers.Count(girc.ALL_EVENTS) == 0 }, 10*time.Second, 5*time.Millisecond,
 		"handleOther should be removed once connected")
 }
+
+func TestReconnectOnItsOwn(t *testing.T) {
+	t.Parallel()
+	server := newFakeIRCServer(t, nil, nil)
+	tb := newTestBridge(t, server, "", nil)
+
+	// The bridge reconnects by itself when the connection drops, and asks the gateway to rejoin
+	// its channels. The fake server sends no NOTICE or PRIVMSG that would tell it its nick.
+	server.drop()
+	for msg := tb.receive(t); msg.Event != config.EventRejoinChannels; msg = tb.receive(t) {
+	}
+	require.NoError(t, tb.JoinChannel(config.ChannelInfo{Name: testChannel}))
+	require.Eventually(t, tb.prefixDone.Load, 15*time.Second, 5*time.Millisecond, "the bridge didn't recognise its own JOIN")
+	assert.Equal(t, "bridge", tb.getNick())
+
+	tb.send(t, "after", "")
+	line := server.awaitSent(1)[0]
+	assert.Equal(t, 2, line.conn)
+	assert.Equal(t, "<WhaTheSht> after", line.text)
+}

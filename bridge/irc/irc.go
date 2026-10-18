@@ -344,8 +344,10 @@ func (b *Birc) doConnect(client *girc.Client, quit chan struct{}) {
 		client.Handlers.Clear(girc.RPL_WELCOME)
 		client.Handlers.Add(girc.RPL_WELCOME, func(client *girc.Client, event girc.Event) {
 			b.Remote <- config.Message{Username: "system", Text: "rejoin", Channel: "", Account: b.Account, Event: config.EventRejoinChannels}
-			// set our correct nick on reconnect if necessary
-			b.setNick(event.Source.Name)
+			// set our correct nick on reconnect if necessary, RPL_WELCOME is addressed to it
+			if len(event.Params) > 0 {
+				b.setNick(event.Params[0])
+			}
 		})
 	}
 }
