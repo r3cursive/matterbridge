@@ -133,7 +133,7 @@ func (b *Birc) handleJoinPartKICK(client *girc.Client, event girc.Event) {
 
 	channel := strings.ToLower(event.Params[0])
 
-	if event.Params[1] == b.Nick {
+	if event.Params[1] == b.getNick() {
 		b.Log.Infof("Got kicked from %s by %s", channel, event.Source.Name)
 		// TODO: Do this another way, without sleeping
 		time.Sleep(time.Duration(b.GetInt("RejoinDelay")) * time.Second)
@@ -150,7 +150,7 @@ func (b *Birc) handleJoinPartQUIT(client *girc.Client, event girc.Event) {
 
 	channel := strings.ToLower(event.Params[0])
 
-	if event.Source.Name == b.Nick && strings.Contains(event.Last(), "Ping timeout") {
+	if event.Source.Name == b.getNick() && strings.Contains(event.Last(), "Ping timeout") {
 		b.Log.Infof("%s reconnecting ..", b.Account)
 		b.authDone = false
 		b.botModeDone = false
@@ -166,7 +166,7 @@ func (b *Birc) handleJoinPartQUIT(client *girc.Client, event girc.Event) {
 
 // Unless we generate another event first, channel join is the first chance to find our current prefix
 func (b *Birc) handleJoinPartPrefix(client *girc.Client, event girc.Event) {
-	if b.prefixDone || event.Source.Name != b.Nick {
+	if b.prefixDone || event.Source.Name != b.getNick() {
 		return
 	}
 
@@ -180,11 +180,11 @@ func (b *Birc) handleJoinPartPrefix(client *girc.Client, event girc.Event) {
 	host := event.Source.Host
 
 	if host == "" {
-		b.Log.Debugf("empty host after %s joined %s?", b.Nick, channel)
+		b.Log.Debugf("empty host after %s joined %s?", b.getNick(), channel)
 		return
 	}
 
-	b.MessagePrefix = len(b.Nick) + len(user) + len(host) + 6 // 6 bytes for ':', '!', '@', ' ' and a trailing CRLF
+	b.MessagePrefix = len(b.getNick()) + len(user) + len(host) + 6 // 6 bytes for ':', '!', '@', ' ' and a trailing CRLF
 	b.SetInt("MessagePrefix", b.MessagePrefix)
 
 	// Work around girc using max prefix length instead of actual prefix length
@@ -204,7 +204,7 @@ func (b *Birc) handleJoinPart(client *girc.Client, event girc.Event) {
 	}
 
 	channel := strings.ToLower(event.Params[0])
-	if event.Source.Name != b.Nick {
+	if event.Source.Name != b.getNick() {
 		if b.GetBool("nosendjoinpart") {
 			return
 		}
@@ -400,7 +400,7 @@ func (b *Birc) handleISupportBOT(client *girc.Client, event girc.Event) {
 	result, ok := client.GetServerOption("BOT")
 	if ok {
 		b.Log.Debugf("Server supports BOT: %s", result)
-		client.Send(&girc.Event{Command: girc.MODE, Params: []string{b.Nick, "+" + result}})
+		client.Send(&girc.Event{Command: girc.MODE, Params: []string{b.getNick(), "+" + result}})
 		b.botModeDone = true
 	}
 }
@@ -458,7 +458,7 @@ func (b *Birc) handleISupportCM(client *girc.Client, event girc.Event) {
 func (b *Birc) handleNewConnection(client *girc.Client, event girc.Event) {
 	b.Log.Debug("Registering callbacks")
 	i := b.i
-	b.Nick = event.Params[0]
+	b.setNick(event.Params[0])
 	b.Log.Debug("Clearing handlers before adding in case of BNC reconnect")
 	i.Handlers.Clear("PRIVMSG")
 	i.Handlers.Clear("CTCP_ACTION")
@@ -671,7 +671,7 @@ func (b *Birc) handlePrivMsg(client *girc.Client, event girc.Event) {
 
 func (b *Birc) handleRunCommands() {
 	for _, cmd := range b.GetStringSlice("RunCommands") {
-		cmd = strings.ReplaceAll(cmd, "{BOTNICK}", b.Nick)
+		cmd = strings.ReplaceAll(cmd, "{BOTNICK}", b.getNick())
 		if err := b.i.Cmd.SendRaw(cmd); err != nil {
 			b.Log.Errorf("RunCommands %s failed: %s", cmd, err)
 		}

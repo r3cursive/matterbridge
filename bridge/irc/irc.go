@@ -26,7 +26,8 @@ import (
 
 type Birc struct {
 	i                                         *girc.Client
-	Nick                                      string
+	Nick                                      string       // use getNick/setNick once connected, handlers run concurrently
+	nickMu                                    sync.RWMutex // protect Nick
 	names                                     map[string][]string
 	namesMu                                   sync.RWMutex // protect the names map from concurrent write attempts
 	connected                                 chan error
@@ -315,7 +316,7 @@ func (b *Birc) doConnect() {
 		b.i.Handlers.Add(girc.RPL_WELCOME, func(client *girc.Client, event girc.Event) {
 			b.Remote <- config.Message{Username: "system", Text: "rejoin", Channel: "", Account: b.Account, Event: config.EventRejoinChannels}
 			// set our correct nick on reconnect if necessary
-			b.Nick = event.Source.Name
+			b.setNick(event.Source.Name)
 		})
 	}
 }
@@ -516,14 +517,14 @@ func (b *Birc) endNames(client *girc.Client, event girc.Event) {
 
 	for len(mynames) > maxNamesPerPost {
 		b.Remote <- config.Message{
-			Username: b.Nick, Text: b.formatnicks(mynames[0:maxNamesPerPost]),
+			Username: b.getNick(), Text: b.formatnicks(mynames[0:maxNamesPerPost]),
 			Channel: channel, Account: b.Account,
 		}
 
 		mynames = mynames[maxNamesPerPost:]
 	}
 	b.Remote <- config.Message{
-		Username: b.Nick, Text: b.formatnicks(mynames),
+		Username: b.getNick(), Text: b.formatnicks(mynames),
 		Channel: channel, Account: b.Account,
 	}
 }
@@ -599,32 +600,45 @@ func (b *Birc) ircHandlePanic() {
 
 func (b *Birc) skipPrivMsg(event girc.Event) bool {
 	// Our nick can be changed
-	b.Nick = b.i.GetNick()
+	nick := b.i.GetNick()
+	b.setNick(nick)
 
 	// freenode doesn't send 001 as first reply
 	if event.Command == "NOTICE" && len(event.Params) != 2 {
 		return true
 	}
 	// don't forward queries to the bot
-	if event.Params[0] == b.Nick {
+	if event.Params[0] == nick {
 		return true
 	}
 	// don't forward message from ourself
 	if event.Source != nil {
-		if event.Source.Name == b.Nick {
+		if event.Source.Name == nick {
 			return true
 		}
 	}
 	// don't forward messages we sent via RELAYMSG
-	if relayedNick, ok := event.Tags.Get("draft/relaymsg"); ok && relayedNick == b.Nick {
+	if relayedNick, ok := event.Tags.Get("draft/relaymsg"); ok && relayedNick == nick {
 		return true
 	}
 	// This is the old name of the cap sent in spoofed messages; I've kept this in
 	// for compatibility reasons
-	if relayedNick, ok := event.Tags.Get("relaymsg"); ok && relayedNick == b.Nick {
+	if relayedNick, ok := event.Tags.Get("relaymsg"); ok && relayedNick == nick {
 		return true
 	}
 	return false
+}
+
+func (b *Birc) getNick() string {
+	b.nickMu.RLock()
+	defer b.nickMu.RUnlock()
+	return b.Nick
+}
+
+func (b *Birc) setNick(nick string) {
+	b.nickMu.Lock()
+	defer b.nickMu.Unlock()
+	b.Nick = nick
 }
 
 func (b *Birc) nicksPerRow() int {
